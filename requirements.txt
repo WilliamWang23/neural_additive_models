@@ -1,0 +1,7 @@
+tensorflow>=1.15
+numpy>=1.15.2
+scikit-learn
+pandas>=0.24
+absl-py
+tf_keras>=2.20.1
+protobuf>=5.28.0,<6

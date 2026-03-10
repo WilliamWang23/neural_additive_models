@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# 本地数据集（体积大，组员自行下载；保留 README 说明）
+data/*
+!data/README.md
+
+# TensorFlow / 训练产物（体积大，不提交）
+repro_runs/
+*.ckpt
+*.index
+*.meta
+*.data-*
+
+# IDE / 系统
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# 日志
+*.log
