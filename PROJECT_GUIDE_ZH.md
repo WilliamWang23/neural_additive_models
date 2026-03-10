@@ -2,7 +2,7 @@
 
 本文件是新的中文说明，旧 `README.md` 保留不变。
 
-## 1) 精简后的核心文件
+## 1) 核心文件
 
 - `data_utils.py`：读取本地数据、特征预处理（含 one-hot 与缩放）、fold/split 划分。
 - `models.py`：NAM 网络结构定义（`NAM`、`FeatureNN`、激活层）。
