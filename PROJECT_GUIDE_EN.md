@@ -5,8 +5,8 @@ This is the new English guide. The old `README.md` is intentionally kept unchang
 ## 1) Core Files (after cleanup)
 
 - `data_utils.py`: local dataset loading, preprocessing (one-hot + scaling), fold/split logic.
-- `models.py`: NAM architecture (`NAM`, `FeatureNN`, activation layers).
-- `graph_builder.py`: PyTorch compatibility helpers for model/loss/metric creation.
+- `models/`: NAM architecture (`NAM`, `FeatureNN`, activation layers).
+- `training/`: training loop, losses, metrics, and model construction helpers.
 - `nam_train.py`: low-level training entry with full flag-based configuration.
 - `nam_test.py`: standalone test/evaluation entry (testing only, no plotting; supports auto param reuse).
 - `nam_train_test.py`: training pipeline smoke test (quick runnability check, not for formal experiments).
@@ -19,15 +19,15 @@ This is the new English guide. The old `README.md` is intentionally kept unchang
 ## 2) Dependency Flow
 
 - Training flow:
-  - `nam_train.py` -> `data_utils.py` + `graph_builder.py`
-  - `graph_builder.py` -> `models.py`
+  - `nam_train.py` -> `data_utils.py` + `training/`
+  - `training/` -> `models/`
 - Smoke-test flow:
   - `nam_train_test.py` -> `nam_train.py` (tiny-epoch classification/regression sanity check)
 - Testing flow:
-  - `nam_test.py` -> `data_utils.py` + `graph_builder.py` + `models.py`
+  - `nam_test.py` -> `data_utils.py` + `training/` + `models/`
   - Input checkpoints: `repro_runs/.../training/fold_x/split_y/model_i`
 - Plotting flow:
-  - `plot_nam_ensemble.py` -> `data_utils.py` + `graph_builder.py` + `models.py`
+  - `plot_nam_ensemble.py` -> `data_utils.py` + `training/` + `models/`
   - Decoupled from test metrics by default
 
 ## 3) Simple Run Commands

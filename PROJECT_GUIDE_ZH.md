@@ -5,8 +5,8 @@
 ## 1) 核心文件
 
 - `data_utils.py`：读取本地数据、特征预处理（含 one-hot 与缩放）、fold/split 划分。
-- `models.py`：NAM 网络结构定义（`NAM`、`FeatureNN`、激活层）。
-- `graph_builder.py`：提供基于 PyTorch 的兼容辅助函数，用于组装模型、loss 和 metric。
+- `models/`：NAM 网络结构定义（`NAM`、`FeatureNN`、激活层）。
+- `training/`：训练循环、loss、metric 与模型构建辅助函数。
 - `nam_train.py`：底层训练入口（完整超参数由 flags 控制）。
 - `nam_test.py`：独立测试入口（只做测试，不画图；可自动读取训练参数）。
 - `nam_train_test.py`：训练链路冒烟测试（快速验证代码能否跑通，不用于正式实验）。
@@ -19,15 +19,15 @@
 ## 2) 文件依赖关系（从训练到测试）
 
 - 训练链路：
-  - `nam_train.py` -> `data_utils.py` + `graph_builder.py`
-  - `graph_builder.py` -> `models.py`
+  - `nam_train.py` -> `data_utils.py` + `training/`
+  - `training/` -> `models/`
 - 冒烟测试链路：
   - `nam_train_test.py` -> `nam_train.py`（内部用小 epoch 跑分类/回归最小流程）
 - 测试链路：
-  - `nam_test.py` -> `data_utils.py` + `graph_builder.py` + `models.py`
+  - `nam_test.py` -> `data_utils.py` + `training/` + `models/`
   - 输入是 `repro_runs/.../training/fold_x/split_y/model_i` 的 checkpoint
 - 画图链路：
-  - `plot_nam_ensemble.py` -> `data_utils.py` + `graph_builder.py` + `models.py`
+  - `plot_nam_ensemble.py` -> `data_utils.py` + `training/` + `models/`
   - 默认与测试逻辑解耦（默认不计算 test metric）
 
 ## 3) 启动方式（尽量简单）

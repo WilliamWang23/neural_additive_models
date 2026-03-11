@@ -1,5 +1,5 @@
 # coding=utf-8
-"""Tests the PyTorch training stack and graph-builder compatibility layer."""
+"""Tests the PyTorch training stack."""
 
 import os
 import sys
@@ -9,24 +9,22 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from neural_additive_models import data_utils
-from neural_additive_models import graph_builder
 from neural_additive_models.training.trainer import TrainingConfig
+from neural_additive_models.training.trainer import create_model
+from neural_additive_models.training.trainer import evaluate_model
 from neural_additive_models.training.trainer import train_ensemble
 
 
-class GraphBuilderTest(unittest.TestCase):
+class TrainerTest(unittest.TestCase):
   """Tests whether training utilities can be run without error."""
 
-  def test_build_graph_smoke(self):
-    """Verify that the compatibility helper exposes expected objects."""
+  def test_create_model_and_evaluate_smoke(self):
+    """Verify that the training helpers expose usable objects."""
     data_x, data_y, _ = data_utils.load_dataset("BreastCancer")
     data_gen = data_utils.split_training_dataset(data_x, data_y, n_splits=2, stratified=True)
     (x_train, y_train), (x_validation, y_validation) = next(data_gen)
-    graph_tensors, metric_scores = graph_builder.build_graph(
-        x_train=x_train,
-        y_train=y_train,
-        x_test=x_validation,
-        y_test=y_validation,
+    config = TrainingConfig(
+        training_epochs=1,
         activation="exu",
         learning_rate=1e-3,
         batch_size=256,
@@ -37,8 +35,17 @@ class GraphBuilderTest(unittest.TestCase):
         decay_rate=0.999,
         l2_regularization=0.1,
     )
-    self.assertIn("nn_model", graph_tensors)
-    self.assertIsInstance(metric_scores["train"](None), float)
+    model = create_model(config, x_train)
+    metric_value = evaluate_model(
+        model=model,
+        features=x_validation,
+        targets=y_validation,
+        regression=False,
+        batch_size=256,
+        device="cpu",
+    )
+    self.assertIsNotNone(model)
+    self.assertIsInstance(metric_value, float)
 
   def test_train_ensemble_smoke(self):
     """Run a short end-to-end training loop."""

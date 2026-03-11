@@ -53,12 +53,12 @@ def str2bool(value):
 def build_parser() -> argparse.ArgumentParser:
   """Create the training argument parser."""
   parser = argparse.ArgumentParser(description="Train NAM or DNN models with PyTorch.")
-  parser.add_argument("--training_epochs", type=int, required=True)
+  parser.add_argument("--training_epochs", type=int, default = 5)
   parser.add_argument("--learning_rate", type=float, default=1e-2)
   parser.add_argument("--output_regularization", type=float, default=0.0)
   parser.add_argument("--l2_regularization", type=float, default=0.0)
   parser.add_argument("--batch_size", type=int, default=1024)
-  parser.add_argument("--logdir", type=str, required=True)
+  parser.add_argument("--logdir", type=str, default = './log')
   parser.add_argument("--dataset_name", type=str, default="Teleco")
   parser.add_argument("--decay_rate", type=float, default=0.995)
   parser.add_argument("--dropout", type=float, default=0.5)

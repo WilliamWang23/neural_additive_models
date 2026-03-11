@@ -10,6 +10,7 @@ from typing import Dict, List, Tuple
 import numpy as np
 import torch
 from torch import nn
+from tqdm import tqdm
 
 from neural_additive_models import models
 from neural_additive_models.runtime.checkpoints import find_checkpoint_path
@@ -175,7 +176,7 @@ def _train_single_model(
   os.makedirs(best_dir, exist_ok=True)
   saved_checkpoints: List[str] = []
 
-  for epoch in range(1, config.training_epochs + 1):
+  for epoch in tqdm(range(1, config.training_epochs + 1), desc=f"Model {model_index} Training"):
     model.train()
     for batch_features, batch_targets in train_loader:
       batch_features = batch_features.to(device)
