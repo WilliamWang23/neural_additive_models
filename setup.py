@@ -24,13 +24,11 @@ here = pathlib.Path(__file__).parent.resolve()
 long_description = (here / 'README.md').read_text(encoding='utf-8')
 
 install_requires = [
-    'tensorflow>=1.15',
-    'numpy>=1.15.2',
-    'scikit-learn',
-    'pandas>=0.24',
-    'absl-py',
-    'tf_keras>=2.20.1',
-    'protobuf>=5.28.0,<6',
+    'torch>=2.1',
+    'numpy>=1.24,<2',
+    'scikit-learn>=1.3',
+    'pandas>=2.1',
+    'matplotlib>=3.8',
 ]
 
 nam_description = ('Neural Additive Models: Intepretable ML with Neural Nets')

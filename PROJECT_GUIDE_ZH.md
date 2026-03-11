@@ -6,7 +6,7 @@
 
 - `data_utils.py`：读取本地数据、特征预处理（含 one-hot 与缩放）、fold/split 划分。
 - `models.py`：NAM 网络结构定义（`NAM`、`FeatureNN`、激活层）。
-- `graph_builder.py`：把模型、loss、优化器、metric 组装成 TF1 兼容计算图。
+- `graph_builder.py`：提供基于 PyTorch 的兼容辅助函数，用于组装模型、loss 和 metric。
 - `nam_train.py`：底层训练入口（完整超参数由 flags 控制）。
 - `nam_test.py`：独立测试入口（只做测试，不画图；可自动读取训练参数）。
 - `nam_train_test.py`：训练链路冒烟测试（快速验证代码能否跑通，不用于正式实验）。
@@ -87,4 +87,3 @@ cd "e:\Code\Projects\neural_additive_models"
 
 - `plot_nam_ensemble.py` 默认只出图，不再默认跑测试指标。
 - 如确实需要在画图时顺带算测试分数，显式加 `--run_test_metrics`。
-

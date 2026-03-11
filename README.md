@@ -9,10 +9,11 @@ for the paper
 
 <img src="https://i.imgur.com/Hvb7sb2.jpg" width="50%" alt="Neural Additive Model" >
 
-Currently,
-we release the `tf.keras.Model` for NAM which can be simply plugged into any neural network training procedure. We also provide helpers for
-building a computation graph using NAM for classification/regression problems with `tf.compat.v1`.
-The `nam_train.py` file provides the example of a training script on a single
+Currently, the repository ships a PyTorch implementation of NAM together with
+PyTorch-based training, evaluation, and visualization scripts. The training
+stack supports automatic device selection in the order `cuda -> mps -> cpu`,
+while still exposing a `--device` flag for explicit overrides. The
+`nam_train.py` file provides the example of a training script on a single
 dataset split.
 
 Use `./run.sh` test script to ensure that the setup is correct.
@@ -22,13 +23,13 @@ The code for multi task NAMs can be found at [https://github.com/lemeln/nam](htt
 
 ## Dependencies
 
-The code was tested under Ubuntu 16 and uses these packages:
+The code uses these packages:
 
-- tensorflow>=1.15
-- numpy>=1.15.2
-- sklearn>=0.23
-- pandas>=0.24
-- absl-py
+- torch>=2.1
+- numpy>=1.24,<2
+- scikit-learn>=1.3
+- pandas>=2.1
+- matplotlib>=3.8
 
 ## Datasets
 

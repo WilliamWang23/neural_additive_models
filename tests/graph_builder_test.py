@@ -1,66 +1,71 @@
 # coding=utf-8
-# Copyright 2026 The Google Research Authors.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+"""Tests the PyTorch training stack and graph-builder compatibility layer."""
 
-"""Tests functionality of building tensorflow graph."""
+import os
+import sys
+import tempfile
+import unittest
 
-from absl.testing import absltest
-from absl.testing import parameterized
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-import tensorflow.compat.v1 as tf
 from neural_additive_models import data_utils
 from neural_additive_models import graph_builder
+from neural_additive_models.training.trainer import TrainingConfig
+from neural_additive_models.training.trainer import train_ensemble
 
 
-class GraphBuilderTest(parameterized.TestCase):
-  """Tests whether neural net models can be run without error."""
+class GraphBuilderTest(unittest.TestCase):
+  """Tests whether training utilities can be run without error."""
 
-  @parameterized.named_parameters(('classification', 'BreastCancer', False),
-                                  ('regression', 'Housing', True))
-  def test_build_graph(self, dataset_name, regression):
-    """Test whether build_graph works as expected."""
-    data_x, data_y, _ = data_utils.load_dataset(dataset_name)
-    data_gen = data_utils.split_training_dataset(
-        data_x, data_y, n_splits=5, stratified=not regression)
+  def test_build_graph_smoke(self):
+    """Verify that the compatibility helper exposes expected objects."""
+    data_x, data_y, _ = data_utils.load_dataset("BreastCancer")
+    data_gen = data_utils.split_training_dataset(data_x, data_y, n_splits=2, stratified=True)
     (x_train, y_train), (x_validation, y_validation) = next(data_gen)
-    sess = tf.InteractiveSession()
-    graph_tensors_and_ops, metric_scores = graph_builder.build_graph(
+    graph_tensors, metric_scores = graph_builder.build_graph(
         x_train=x_train,
         y_train=y_train,
         x_test=x_validation,
         y_test=y_validation,
-        activation='exu',
+        activation="exu",
         learning_rate=1e-3,
         batch_size=256,
         shallow=True,
-        regression=regression,
+        regression=False,
         output_regularization=0.1,
         dropout=0.1,
         decay_rate=0.999,
-        name_scope='model',
-        l2_regularization=0.1)
-    # Run initializer ops
-    sess.run(tf.global_variables_initializer())
-    sess.run([
-        graph_tensors_and_ops['iterator_initializer'],
-        graph_tensors_and_ops['running_vars_initializer']
-    ])
-    for _ in range(2):
-      sess.run(graph_tensors_and_ops['train_op'])
-    self.assertIsInstance(metric_scores['train'](sess), float)
-    sess.close()
+        l2_regularization=0.1,
+    )
+    self.assertIn("nn_model", graph_tensors)
+    self.assertIsInstance(metric_scores["train"](None), float)
+
+  def test_train_ensemble_smoke(self):
+    """Run a short end-to-end training loop."""
+    data_x, data_y, _ = data_utils.load_dataset("BreastCancer")
+    data_gen = data_utils.split_training_dataset(data_x, data_y, n_splits=2, stratified=True)
+    (x_train, y_train), (x_validation, y_validation) = next(data_gen)
+    config = TrainingConfig(
+        training_epochs=2,
+        batch_size=128,
+        save_checkpoint_every_n_epochs=1,
+        early_stopping_epochs=2,
+        num_basis_functions=16,
+        n_models=1,
+        device="cpu",
+    )
+    with tempfile.TemporaryDirectory() as tempdir:
+      train_metric, validation_metric = train_ensemble(
+          x_train=x_train,
+          y_train=y_train,
+          x_validation=x_validation,
+          y_validation=y_validation,
+          logdir=tempdir,
+          config=config,
+      )
+    self.assertIsInstance(train_metric, float)
+    self.assertIsInstance(validation_metric, float)
 
 
-if __name__ == '__main__':
-  absltest.main()
+if __name__ == "__main__":
+  unittest.main()

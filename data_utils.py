@@ -16,12 +16,18 @@
 """Data readers for regression/ binary classification datasets."""
 
 import gzip
+import os
 import os.path as osp
 import tarfile
 from typing import Tuple, Dict, Union, Iterator, List
 
+os.environ.setdefault('KMP_USE_SHM', '0')
+os.environ.setdefault('OMP_NUM_THREADS', '1')
+os.environ.setdefault('KMP_DUPLICATE_LIB_OK', 'TRUE')
+
 import numpy as np
 import pandas as pd
+import torch
 
 from sklearn.compose import ColumnTransformer
 from sklearn.datasets import load_breast_cancer
@@ -34,8 +40,6 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import FunctionTransformer
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.preprocessing import OneHotEncoder
-import tensorflow.compat.v1 as tf
-gfile = tf.gfile
 
 DATA_PATH = osp.join(osp.dirname(__file__), 'data')
 DatasetType = Tuple[np.ndarray, np.ndarray]
@@ -46,11 +50,20 @@ def _resolve_dataset_path(relative_path):
   return osp.join(DATA_PATH, relative_path)
 
 
+def _resolve_existing_dataset_path(*relative_paths):
+  """Return the first existing dataset path under ``DATA_PATH``."""
+  resolved_paths = [_resolve_dataset_path(path) for path in relative_paths]
+  for path in resolved_paths:
+    if osp.exists(path):
+      return path
+  return resolved_paths[0]
+
+
 def save_array_to_disk(filename,
                        np_arr,
                        allow_pickle = False):
   """Saves a np.ndarray to a specified file on disk."""
-  with gfile.Open(filename, 'wb') as f:
+  with open(filename, 'wb') as f:
     with gzip.GzipFile(fileobj=f) as outfile:
       np.save(outfile, np_arr, allow_pickle=allow_pickle)
 
@@ -60,7 +73,7 @@ def read_dataset(dataset_name,
                  names = None,
                  delim_whitespace = False):
   dataset_path = _resolve_dataset_path(dataset_name)
-  with gfile.Open(dataset_path, 'r') as f:
+  with open(dataset_path, 'r', encoding='utf-8') as f:
     df = pd.read_csv(
         f, header=header, names=names, delim_whitespace=delim_whitespace)
   return df
@@ -142,7 +155,9 @@ def load_credit_data():
     A dict containing the `problem` type (i.e. classification) and the
     input features `X` as a pandas.Dataframe and the labels `y` as a pd.Series.
   """
-  credit_path = _resolve_dataset_path('Credit Card Fraud Detection/creditcard.csv')
+  credit_path = _resolve_existing_dataset_path(
+      'creditcard.csv',
+      'Credit Card Fraud Detection/creditcard.csv')
   df = pd.read_csv(credit_path)
   df = df.dropna()
   train_cols = df.columns[0:-1]
@@ -194,7 +209,8 @@ def load_mimic2_data():
 
   # Create column names
   attr_dict_path = _resolve_dataset_path('mimic2/mimic2.dict')
-  attributes = gfile.Open(attr_dict_path, 'r').readlines()
+  with open(attr_dict_path, 'r', encoding='utf-8') as f:
+    attributes = f.readlines()
   column_names = [x.split(' ,')[0] for x in attributes]
 
   df = read_dataset(
@@ -227,7 +243,9 @@ def load_recidivism_data():
     input features `X` as a pandas.Dataframe and the labels `y` as a pd.Series.
   """
 
-  recid_path = _resolve_dataset_path('compas-analysis-master/compas-scores-two-years.csv')
+  recid_path = _resolve_existing_dataset_path(
+      'compas-scores-two-years.csv',
+      'compas-analysis-master/compas-scores-two-years.csv')
   df = pd.read_csv(recid_path)
   df = df[df['sex'].isin(['Male', 'Female'])]
   df = df[df['two_year_recid'].isin([0, 1])]
@@ -259,7 +277,8 @@ def load_fico_score_data():
     np.ndarray.
   """
 
-  fico_path = _resolve_dataset_path(
+  fico_path = _resolve_existing_dataset_path(
+      'HelocData.csv',
       'FICO-Explainable-ML-Challenge-HELOC-Dataset-master/HelocData.csv')
   df = pd.read_csv(fico_path)
   df = df.replace([-9, -8, -7], np.nan).dropna()
@@ -305,8 +324,11 @@ def load_california_housing_data(
   """
   # Local project CSV (if target exists) then sklearn fallback.
   local_csv_path = osp.join(
-      osp.dirname(__file__), 'data', 'California Housing',
-      'california_housing.csv')
+      osp.dirname(__file__), 'data', 'california_housing.csv')
+  if not osp.exists(local_csv_path):
+    local_csv_path = osp.join(
+        osp.dirname(__file__), 'data', 'California Housing',
+        'california_housing.csv')
   if osp.exists(local_csv_path):
     local_df = pd.read_csv(local_csv_path)
     if 'MedHouseVal' in local_df.columns:
@@ -317,9 +339,19 @@ def load_california_housing_data(
       x_df = local_df.drop(columns=['median_house_value'])
       y = local_df['median_house_value'].values
       return {'problem': 'regression', 'X': x_df, 'y': y}
+    if 'target' in local_df.columns:
+      x_df = local_df.drop(columns=['target'])
+      y = local_df['target'].values
+      return {'problem': 'regression', 'X': x_df, 'y': y}
+    raise ValueError(
+        'Local California Housing CSV must include one of '
+        '`MedHouseVal`, `median_house_value`, or `target` columns: '
+        f'{local_csv_path}')
 
   # Sklearn fallback always has target.
-  housing = fetch_california_housing(as_frame=True)
+  housing = fetch_california_housing(
+      as_frame=True,
+      data_home=osp.join(DATA_PATH, 'sklearn_cache'))
   return {
       'problem': 'regression',
       'X': housing.data.copy(),

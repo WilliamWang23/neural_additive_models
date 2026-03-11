@@ -6,7 +6,7 @@ This is the new English guide. The old `README.md` is intentionally kept unchang
 
 - `data_utils.py`: local dataset loading, preprocessing (one-hot + scaling), fold/split logic.
 - `models.py`: NAM architecture (`NAM`, `FeatureNN`, activation layers).
-- `graph_builder.py`: TF1-compatible graph construction (loss/optimizer/metrics).
+- `graph_builder.py`: PyTorch compatibility helpers for model/loss/metric creation.
 - `nam_train.py`: low-level training entry with full flag-based configuration.
 - `nam_test.py`: standalone test/evaluation entry (testing only, no plotting; supports auto param reuse).
 - `nam_train_test.py`: training pipeline smoke test (quick runnability check, not for formal experiments).
@@ -87,4 +87,3 @@ Notes:
 
 - `plot_nam_ensemble.py` now focuses on plotting by default.
 - To compute test metrics inside plotting, explicitly pass `--run_test_metrics`.
-

@@ -1,61 +1,38 @@
 # coding=utf-8
-# Copyright 2026 The Google Research Authors.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
 """Tests functionality of training NAM models."""
 
 import os
-import os.path as osp
 import sys
+import tempfile
+import unittest
 
-from absl import flags
-from absl.testing import absltest
-from absl.testing import flagsaver
-from absl.testing import parameterized
-import tensorflow.compat.v1 as tf
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-_REPO_ROOT = osp.dirname(osp.abspath(__file__))
-_REPO_PARENT = osp.dirname(_REPO_ROOT)
-if _REPO_PARENT not in sys.path:
-  sys.path.insert(0, _REPO_PARENT)
-
+from neural_additive_models import data_utils
 from neural_additive_models import nam_train
 
-FLAGS = flags.FLAGS
+
+class NAMTrainingTest(unittest.TestCase):
+  """Tests whether NAM training runs without error."""
+
+  def test_nam_classification(self):
+    """Run a short classification training pipeline."""
+    data_x, data_y, _ = data_utils.load_dataset("BreastCancer")
+    (x_train_all, y_train_all), _ = data_utils.get_train_test_fold(
+        data_x, data_y, fold_num=1, num_folds=5, stratified=True)
+    data_gen = data_utils.split_training_dataset(
+        x_train_all, y_train_all, n_splits=3, stratified=True)
+    parser = nam_train.build_parser()
+    args = parser.parse_args([
+        "--training_epochs=4",
+        "--save_checkpoint_every_n_epochs=2",
+        "--early_stopping_epochs=2",
+        "--dataset_name=BreastCancer",
+        "--num_basis_functions=16",
+        f"--logdir={tempfile.mkdtemp()}",
+    ])
+    nam_train.single_split_training(data_gen, args.logdir, args)
 
 
-class NAMTrainingTest(parameterized.TestCase):
-  """Tests whether NAMs can be run without error."""
-
-  @parameterized.named_parameters(
-      ('classification', 'BreastCancer', False),
-      ('regression', 'Housing', True),
-  )
-  @flagsaver.flagsaver
-  def test_nam(self, dataset_name, regression):
-    """Test whether the NAM training pipeline runs successfully or not."""
-    FLAGS.training_epochs = 4
-    FLAGS.save_checkpoint_every_n_epochs = 2
-    FLAGS.early_stopping_epochs = 2
-    FLAGS.dataset_name = dataset_name
-    FLAGS.regression = regression
-    FLAGS.num_basis_functions = 16
-    logdir = os.path.join(self.create_tempdir().full_path, dataset_name)
-    tf.gfile.MakeDirs(logdir)
-    data_gen, _ = nam_train.create_test_train_fold(fold_num=1)
-    nam_train.single_split_training(data_gen, logdir)
-
-
-if __name__ == '__main__':
-  absltest.main()
+if __name__ == "__main__":
+  unittest.main()

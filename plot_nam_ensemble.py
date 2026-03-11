@@ -1,6 +1,8 @@
 #!/usr/bin/env python
 # coding=utf-8
-"""Standalone NAM ensemble visualization for trained checkpoints."""
+"""Standalone NAM ensemble visualization for trained PyTorch checkpoints."""
+
+from __future__ import annotations
 
 import argparse
 import json
@@ -10,13 +12,16 @@ import sys
 from datetime import datetime
 from typing import Dict, List, Tuple
 
+os.environ.setdefault("KMP_USE_SHM", "0")
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
+
 import matplotlib.patches as patches
-import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
-import tensorflow.compat.v2 as tf
-
-tf.enable_v2_behavior()
+import pandas as pd
+import torch
 
 
 def _repo_root() -> str:
@@ -29,135 +34,141 @@ def _add_repo_parent_to_path(repo_root: str) -> None:
     sys.path.insert(0, parent)
 
 
+_add_repo_parent_to_path(_repo_root())
+
+from neural_additive_models import data_utils
+from neural_additive_models.nam_train import str2bool
+from neural_additive_models.runtime import find_checkpoint_path
+from neural_additive_models.runtime import load_checkpoint
+from neural_additive_models.runtime import resolve_device
+from neural_additive_models.training.metrics import calculate_metric
+from neural_additive_models.training.trainer import TrainingConfig
+from neural_additive_models.training.trainer import create_model
+
+
+def _load_training_params(run_dir: str) -> Dict[str, object]:
+  """Load training params from the canonical or fallback path."""
+  params_path = osp.join(run_dir, "training_params.json")
+  if not osp.exists(params_path):
+    fold_name = osp.basename(osp.normpath(run_dir))
+    alt_params_path = osp.join(osp.dirname(run_dir), "training", fold_name, "training_params.json")
+    if osp.exists(alt_params_path):
+      params_path = alt_params_path
+    else:
+      raise FileNotFoundError(
+          f"training_params.json not found in run_dir: {run_dir}. "
+          "Pass explicit args or run training first."
+      )
+  with open(params_path, "r", encoding="utf-8") as f:
+    return json.load(f)
+
+
+def _infer_model_logdir(run_dir: str, fold_num: int, split_idx: int) -> str:
+  """Resolve the model directory from a fold-level run directory."""
+  run_dir = osp.normpath(run_dir)
+  parent = osp.dirname(run_dir)
+  if osp.basename(parent) == "training":
+    logdir_root = parent
+  else:
+    logdir_root = osp.join(parent, "training")
+  return osp.join(logdir_root, f"fold_{fold_num}", f"split_{split_idx}")
+
+
 def inverse_min_max_scaler(x, min_val, max_val):
+  """Invert the project min-max scaling."""
   return (x + 1) / 2 * (max_val - min_val) + min_val
 
 
-def load_col_min_max(data_utils, dataset_name: str) -> Dict[str, Tuple[float, float]]:
-  if dataset_name == "Housing":
-    dataset = data_utils.load_california_housing_data()
-  elif dataset_name == "BreastCancer":
-    dataset = data_utils.load_breast_data()
-  elif dataset_name == "Recidivism":
-    dataset = data_utils.load_recidivism_data()
-  elif dataset_name == "Fico":
-    dataset = data_utils.load_fico_score_data()
-  elif dataset_name == "Credit":
-    dataset = data_utils.load_credit_data()
-  else:
+def load_col_min_max(dataset_name: str) -> Dict[str, Tuple[float, float]]:
+  """Load column min/max ranges from the raw dataset."""
+  dataset_map = {
+      "Housing": data_utils.load_california_housing_data,
+      "BreastCancer": data_utils.load_breast_data,
+      "Recidivism": data_utils.load_recidivism_data,
+      "Fico": data_utils.load_fico_score_data,
+      "Credit": data_utils.load_credit_data,
+      "Adult": data_utils.load_adult_data,
+      "Telco": data_utils.load_telco_churn_data,
+  }
+  if dataset_name not in dataset_map:
     raise ValueError(f"{dataset_name} not found!")
-
-  if "full" in dataset:
-    dataset = dataset["full"]
+  dataset = dataset_map[dataset_name]()
   x_df = dataset["X"].copy()
-  # Recidivism (and Adult, etc.) use one-hot encoding; col names must match load_dataset output.
-  if dataset_name == "Recidivism":
-    is_cat = np.array([dt.kind == "O" for dt in x_df.dtypes])
-    cat_cols = x_df.columns.values[is_cat].tolist()
-    num_cols = x_df.columns.values[~is_cat].tolist()
-    if cat_cols:
-      x_df = x_df.astype({c: str for c in cat_cols})
-      transformed = pd.get_dummies(x_df, columns=cat_cols, prefix_sep=": ", dtype=np.float32)
-    else:
-      transformed = x_df.copy()
-    if num_cols:
-      transformed[num_cols] = transformed[num_cols].astype(np.float32)
-    col_min_max = {}
-    for col in transformed.columns:
-      vals = transformed[col].values
-      col_min_max[col] = (float(np.min(vals)), float(np.max(vals)))
-    return col_min_max
-  x = x_df
+  is_categorical = np.array([dt.kind == "O" for dt in x_df.dtypes])
+  categorical_cols = x_df.columns.values[is_categorical].tolist()
+  numerical_cols = x_df.columns.values[~is_categorical].tolist()
+  if categorical_cols:
+    transformed = pd.get_dummies(x_df, columns=categorical_cols, prefix_sep=": ", dtype=np.float32)
+  else:
+    transformed = x_df.copy()
+  if numerical_cols:
+    transformed[numerical_cols] = transformed[numerical_cols].astype(np.float32)
   col_min_max = {}
-  for col in x:
-    unique_vals = x[col].unique()
-    col_min_max[col] = (float(np.min(unique_vals)), float(np.max(unique_vals)))
+  for col in transformed.columns:
+    values = transformed[col].values
+    col_min_max[col] = (float(np.min(values)), float(np.max(values)))
   return col_min_max
 
 
 def compute_all_indices(
-    data_x: np.ndarray, unique_features: List[np.ndarray], column_names: List[str]
+    data_x: np.ndarray,
+    unique_features: List[np.ndarray],
+    column_names: List[str],
 ) -> Dict[str, np.ndarray]:
+  """Map each sample value to the corresponding feature grid index."""
   all_indices = {}
-  for i, col in enumerate(column_names):
-    x_i = data_x[:, i]
-    all_indices[col] = np.searchsorted(unique_features[i][:, 0], x_i, "left")
+  for index, column_name in enumerate(column_names):
+    x_i = data_x[:, index]
+    all_indices[column_name] = np.searchsorted(unique_features[index][:, 0], x_i, "left")
   return all_indices
 
 
-def resolve_checkpoint_path(model_dir: str) -> str:
-  best_dir = osp.join(model_dir, "best_checkpoint")
-  ckpt = tf.train.latest_checkpoint(best_dir) if osp.isdir(best_dir) else None
-  if ckpt:
-    return ckpt
-  ckpt = tf.train.latest_checkpoint(model_dir)
-  if ckpt:
-    return ckpt
-  index_files = tf.io.gfile.glob(osp.join(model_dir, "*.index"))
-  if index_files:
-    return sorted(index_files)[-1].replace(".index", "")
-  raise FileNotFoundError(f"No checkpoint found under: {model_dir}")
+def get_test_predictions(model, x_test: np.ndarray, batch_size: int, device: torch.device):
+  """Predict on test data in batches."""
+  predictions = []
+  model.eval()
+  with torch.no_grad():
+    for start in range(0, x_test.shape[0], batch_size):
+      batch = torch.as_tensor(x_test[start:start + batch_size], dtype=torch.float32, device=device)
+      predictions.append(model(batch, training=False).detach().cpu().numpy())
+  return np.concatenate(predictions, axis=0)
 
 
-def build_restore_var_map(nn_model, checkpoint_path: str, model_idx: int):
-  ckpt_vars = {name for name, _ in tf.train.list_variables(checkpoint_path)}
-  var_map = {}
-  missing_vars = []
-  for var in nn_model.variables:
-    base_name = var.name.split(":", 1)[0]
-    candidates = [base_name]
-    candidates.append(base_name.replace(f"/nam/", f"/nam_{model_idx}/"))
-    candidates.append(base_name.replace(f"/nam_{model_idx}/", "/nam/"))
-    chosen = next((c for c in candidates if c in ckpt_vars), None)
-    if chosen is None:
-      missing_vars.append(base_name)
-      continue
-    var_map[chosen] = var
-
-  if missing_vars:
-    preview = ", ".join(missing_vars[:5])
-    raise KeyError(f"Unmatched model vars ({len(missing_vars)}). Examples: {preview}")
-  return var_map
-
-
-def get_test_predictions(sess, pred_tensor, pred_input_ph, x_test: np.ndarray, batch_size: int = 256):
-  batch_size = min(batch_size, x_test.shape[0])
-  preds = []
-  for start in range(0, x_test.shape[0], batch_size):
-    pred = sess.run(pred_tensor, feed_dict={pred_input_ph: x_test[start : start + batch_size]})
-    preds.append(pred)
-  return np.concatenate(preds, axis=0)
-
-
-def get_feature_predictions(sess, feature_tensors, feature_input_phs, unique_features: List[np.ndarray]):
+def get_feature_predictions(model, unique_features: List[np.ndarray], device: torch.device):
+  """Predict each feature shape function on its unique-value grid."""
   feature_predictions = []
-  for i, feat_vals in enumerate(unique_features):
-    f_preds = sess.run(feature_tensors[i], feed_dict={feature_input_phs[i]: feat_vals})
-    feature_predictions.append(np.squeeze(f_preds))
+  model.eval()
+  with torch.no_grad():
+    for feature_index, feature_values in enumerate(unique_features):
+      batch = torch.as_tensor(feature_values, dtype=torch.float32, device=device)
+      predictions = model.feature_nns[feature_index](batch, training=False)
+      feature_predictions.append(predictions.detach().cpu().numpy().squeeze())
   return feature_predictions
 
 
 def compute_model_mean_pred(model_hist_data, all_indices, column_names):
+  """Compute the feature-wise average contribution per model."""
   return {col: float(np.mean(model_hist_data[col][all_indices[col]])) for col in column_names}
 
 
 def compute_mean_feature_importance(avg_hist_data, mean_pred):
+  """Compute average absolute contributions."""
   mean_abs_score = {}
-  for k in avg_hist_data:
-    mean_abs_score[k] = np.mean(np.abs(avg_hist_data[k] - mean_pred[k]))
-  x1, x2 = zip(*mean_abs_score.items())
-  return x1, x2
+  for key in avg_hist_data:
+    mean_abs_score[key] = np.mean(np.abs(avg_hist_data[key] - mean_pred[key]))
+  labels, scores = zip(*mean_abs_score.items())
+  return labels, scores
 
 
-def plot_mean_feature_importance(dataset_name, cols, x2, output_path):
+def plot_mean_feature_importance(dataset_name, cols, scores, output_path):
+  """Plot aggregated feature importance."""
   fig = plt.figure(figsize=(7, 4.5))
-  ind = np.arange(len(cols))
-  x_order = np.argsort(x2)
-  cols_here = [cols[i] for i in x_order]
-  x2_here = [x2[i] for i in x_order]
-
-  plt.bar(ind, x2_here, width=0.6, label="NAM Ensemble")
-  plt.xticks(ind, cols_here, rotation=75, fontsize=10, ha="right")
+  indices = np.arange(len(cols))
+  order = np.argsort(scores)
+  ordered_cols = [cols[i] for i in order]
+  ordered_scores = [scores[i] for i in order]
+  plt.bar(indices, ordered_scores, width=0.6, label="NAM Ensemble")
+  plt.xticks(indices, ordered_cols, rotation=75, fontsize=10, ha="right")
   plt.ylabel("Mean Absolute Score", fontsize=12)
   plt.legend(loc="upper right", fontsize=10)
   plt.title(f"Overall Importance: {dataset_name}", fontsize=13)
@@ -175,31 +186,30 @@ def shade_by_density_blocks(
     n_blocks=20,
     color=(0.9, 0.5, 0.5),
 ):
+  """Shade plots according to feature density."""
   hist_data_pairs = sorted(list(hist_data.items()), key=lambda x: x[0])
-  min_y = np.min([np.min(a[1]) for a in hist_data_pairs])
-  max_y = np.max([np.max(a[1]) for a in hist_data_pairs])
+  min_y = np.min([np.min(pair[1]) for pair in hist_data_pairs])
+  max_y = np.max([np.max(pair[1]) for pair in hist_data_pairs])
   span = max_y - min_y
-  min_y = min_y - 0.01 * span
-  max_y = max_y + 0.01 * span
-
-  for i, (name, _) in enumerate(hist_data_pairs):
+  min_y -= 0.01 * span
+  max_y += 0.01 * span
+  for index, (name, _) in enumerate(hist_data_pairs):
     unique_x_data = unique_features_original[name]
     single_feature_data = single_features_original[name]
-    ax = plt.subplot(num_rows, num_cols, i + 1)
+    ax = plt.subplot(num_rows, num_cols, index + 1)
     min_x = np.min(unique_x_data)
     max_x = np.max(unique_x_data)
-    x_n_blocks = min(n_blocks, len(unique_x_data))
+    block_count = min(n_blocks, len(unique_x_data))
     if name in categorical_names:
       min_x -= 0.5
       max_x += 0.5
-    segments = (max_x - min_x) / x_n_blocks
-    density = np.histogram(single_feature_data, bins=x_n_blocks)
-    normed_density = density[0] / np.maximum(np.max(density[0]), 1e-12)
-
-    for p in range(x_n_blocks):
-      start_x = min_x + segments * p
-      end_x = min_x + segments * (p + 1)
-      alpha = min(1.0, 0.01 + normed_density[p])
+    segment_width = (max_x - min_x) / block_count
+    density = np.histogram(single_feature_data, bins=block_count)
+    normalized_density = density[0] / np.maximum(np.max(density[0]), 1e-12)
+    for block_index in range(block_count):
+      start_x = min_x + segment_width * block_index
+      end_x = min_x + segment_width * (block_index + 1)
+      alpha = min(1.0, 0.01 + normalized_density[block_index])
       rect = patches.Rectangle(
           (start_x, min_y - 1),
           end_x - start_x,
@@ -227,21 +237,20 @@ def plot_all_hist(
     max_y=None,
     alpha=1.0,
 ):
+  """Plot shape functions for each feature."""
   hist_data_pairs = sorted(list(hist_data.items()), key=lambda x: x[0])
   if min_y is None:
-    min_y = np.min([np.min(a) for _, a in hist_data_pairs])
+    min_y = np.min([np.min(values) for _, values in hist_data_pairs])
   if max_y is None:
-    max_y = np.max([np.max(a) for _, a in hist_data_pairs])
+    max_y = np.max([np.max(values) for _, values in hist_data_pairs])
   span = max_y - min_y
-  min_y = min_y - 0.01 * span
-  max_y = max_y + 0.01 * span
-
+  min_y -= 0.01 * span
+  max_y += 0.01 * span
   col_mapping = col_names_map[dataset_name]
-
-  for i, (name, pred) in enumerate(hist_data_pairs):
+  for index, (name, pred) in enumerate(hist_data_pairs):
     center = mean_pred[name]
     unique_x_data = unique_features_original[name]
-    plt.subplot(num_rows, num_cols, i + 1)
+    plt.subplot(num_rows, num_cols, index + 1)
     if name in categorical_names:
       unique_x_data = np.round(unique_x_data, decimals=1)
       step_loc = "mid" if len(unique_x_data) <= 2 else "post"
@@ -252,7 +261,6 @@ def plot_all_hist(
     else:
       plt.plot(unique_x_data, pred - center, color=color_base, linewidth=linewidth, alpha=alpha)
       plt.xticks(fontsize=10)
-
     plt.ylim(min_y, max_y)
     plt.yticks(fontsize=10)
     min_x = np.min(unique_x_data)
@@ -261,59 +269,95 @@ def plot_all_hist(
       min_x -= 0.5
       max_x += 0.5
     plt.xlim(min_x, max_x)
-    if i % num_cols == 0:
-      plt.ylabel("House Price Contribution", fontsize=11)
+    if index % num_cols == 0:
+      plt.ylabel("Feature Contribution", fontsize=11)
     plt.xlabel(col_mapping[name], fontsize=11)
   return min_y, max_y
 
 
-def main():
+def build_parser() -> argparse.ArgumentParser:
+  """Build the plot CLI parser."""
   repo_root = _repo_root()
-  # model_logdir must point to .../training/fold_X/split_Y (contains model_0, model_1, ...)
-  default_model_logdir = osp.join(
-      repo_root, "repro_runs", "housing_nmodels20", "training", "fold_5", "split_1"
-  )
+  default_model_logdir = osp.join(repo_root, "repro_runs", "housing_nmodels20", "training", "fold_5", "split_1")
   default_output_dir = osp.join(repo_root, "repro_runs", "housing_nmodels20", "fold_5", "visualization_outputs")
-
   parser = argparse.ArgumentParser(description="Plot NAM ensemble shape functions.")
-  parser.add_argument("--repo_root", default=repo_root)
-  parser.add_argument("--model_logdir", default=default_model_logdir)
-  parser.add_argument("--dataset_name", default="Housing")
-  parser.add_argument("--n_models", type=int, default=20)
-  parser.add_argument("--fold_num", type=int, default=5)
+  parser.add_argument("--run_dir", default=None)
+  parser.add_argument("--model_logdir", default=None)
+  parser.add_argument("--dataset_name", default=None)
+  parser.add_argument("--n_models", type=int, default=None)
+  parser.add_argument("--fold_num", type=int, default=None)
   parser.add_argument("--num_folds", type=int, default=5)
-  parser.add_argument("--num_splits", type=int, default=3)
-  parser.add_argument("--split_idx", type=int, default=1, help="1-based split index")
-  parser.add_argument("--activation", default="relu")
-  parser.add_argument("--num_basis_functions", type=int, default=64)
-  parser.add_argument("--dropout", type=float, default=0.0)
-  parser.add_argument("--shallow", action="store_true")
-  parser.add_argument(
-      "--run_test_metrics",
-      action="store_true",
-      help="If set, also compute and save held-out test metrics.",
+  parser.add_argument("--num_splits", type=int, default=None)
+  parser.add_argument("--split_idx", type=int, default=1)
+  parser.add_argument("--activation", default=None)
+  parser.add_argument("--num_basis_functions", type=int, default=None)
+  parser.add_argument("--units_multiplier", type=int, default=None)
+  parser.add_argument("--dropout", type=float, default=None)
+  parser.add_argument("--feature_dropout", type=float, default=None)
+  parser.add_argument("--shallow", type=str2bool, nargs="?", const=True, default=None)
+  parser.add_argument("--regression", type=str2bool, nargs="?", const=True, default=None)
+  parser.add_argument("--use_dnn", type=str2bool, nargs="?", const=True, default=None)
+  parser.add_argument("--run_test_metrics", type=str2bool, nargs="?", const=True, default=False)
+  parser.add_argument("--device", default="auto", choices=["auto", "cuda", "mps", "cpu"])
+  parser.add_argument("--output_dir", default=None)
+  return parser
+
+
+def main(argv=None):
+  """CLI entrypoint."""
+  args = build_parser().parse_args(argv)
+  repo_root = _repo_root()
+  default_model_logdir = osp.join(repo_root, "repro_runs", "housing_nmodels20", "training", "fold_5", "split_1")
+  default_output_dir = osp.join(repo_root, "repro_runs", "housing_nmodels20", "fold_5", "visualization_outputs")
+  cfg = _load_training_params(args.run_dir) if args.run_dir else {}
+  merged = {**cfg}
+  for key, value in vars(args).items():
+    if value is not None:
+      merged[key] = value
+  dataset_name = merged.get("dataset_name", "Housing")
+  n_models = int(merged.get("n_models", 20))
+  fold_num = int(merged.get("fold_num", 5))
+  num_splits = int(merged.get("num_splits", 3))
+  split_idx = int(merged.get("split_idx", 1))
+  model_logdir = args.model_logdir or (
+      _infer_model_logdir(args.run_dir, fold_num, split_idx) if args.run_dir else default_model_logdir)
+  output_dir = args.output_dir or (
+      osp.join(args.run_dir, "visualization_outputs") if args.run_dir else default_output_dir)
+  os.makedirs(output_dir, exist_ok=True)
+  device = resolve_device(args.device)
+  is_regression = (
+      args.regression if args.regression is not None else merged.get("regression", dataset_name in ["Housing", "Fico"]))
+  config = TrainingConfig(
+      training_epochs=1,
+      dropout=float(merged.get("dropout", 0.0)),
+      feature_dropout=float(merged.get("feature_dropout", 0.0)),
+      num_basis_functions=int(merged.get("num_basis_functions", 64)),
+      units_multiplier=int(merged.get("units_multiplier", 2)),
+      activation=str(merged.get("activation", "relu")),
+      regression=is_regression,
+      shallow=bool(merged.get("shallow", False)),
+      use_dnn=bool(merged.get("use_dnn", False)),
+      max_checkpoints_to_keep=1,
+      device=args.device,
   )
-  parser.add_argument("--output_dir", default=default_output_dir)
-  args = parser.parse_args()
 
-  _add_repo_parent_to_path(args.repo_root)
-  from neural_additive_models import data_utils  # pylint: disable=import-error
-  from neural_additive_models import graph_builder  # pylint: disable=import-error
-
-  os.makedirs(args.output_dir, exist_ok=True)
-
-  is_regression = args.dataset_name in ["Housing", "Fico"]
-  data_x, data_y, column_names = data_utils.load_dataset(args.dataset_name)
-  col_min_max = load_col_min_max(data_utils, args.dataset_name)
-
+  data_x, data_y, column_names = data_utils.load_dataset(dataset_name)
+  col_min_max = load_col_min_max(dataset_name)
   (x_train_all, y_train_all), test_dataset = data_utils.get_train_test_fold(
-      data_x, data_y, fold_num=args.fold_num, num_folds=args.num_folds, stratified=not is_regression
+      data_x,
+      data_y,
+      fold_num=fold_num,
+      num_folds=args.num_folds,
+      stratified=not is_regression,
   )
   data_gen = data_utils.split_training_dataset(
-      x_train_all, y_train_all, n_splits=args.num_splits, stratified=not is_regression
+      x_train_all,
+      y_train_all,
+      n_splits=num_splits,
+      stratified=not is_regression,
   )
   split = None
-  for _ in range(args.split_idx):
+  for _ in range(split_idx):
     split = next(data_gen)
   (x_train, _), _ = split
 
@@ -323,10 +367,10 @@ def main():
 
   unique_features_original = {}
   single_features_original = {}
-  for i, col in enumerate(column_names):
+  for index, col in enumerate(column_names):
     min_val, max_val = col_min_max[col]
-    unique_features_original[col] = inverse_min_max_scaler(unique_features[i][:, 0], min_val, max_val)
-    single_features_original[col] = inverse_min_max_scaler(single_features[i][:, 0], min_val, max_val)
+    unique_features_original[col] = inverse_min_max_scaler(unique_features[index][:, 0], min_val, max_val)
+    single_features_original[col] = inverse_min_max_scaler(single_features[index][:, 0], min_val, max_val)
   all_indices = compute_all_indices(data_x, unique_features, column_names)
 
   col_names_map = {
@@ -341,70 +385,46 @@ def main():
           "Longitude": "Longitude",
       }
   }
-  if args.dataset_name not in col_names_map:
-    # Fallback: use raw feature names when no pretty mapping is defined.
-    col_names_map[args.dataset_name] = {c: c for c in column_names}
+  if dataset_name not in col_names_map:
+    col_names_map[dataset_name] = {name: name for name in column_names}
   categorical_names = []
 
   per_model_hist_data = []
   per_model_mean_pred = []
   per_model_test_metric = []
+  for model_idx in range(n_models):
+    checkpoint_path = find_checkpoint_path(osp.join(model_logdir, f"model_{model_idx}"))
+    checkpoint = load_checkpoint(checkpoint_path, map_location=device)
+    model = create_model(config, x_train).to(device)
+    model.load_state_dict(checkpoint["state_dict"])
+    if args.run_test_metrics:
+      test_predictions = get_test_predictions(model, test_dataset[0], batch_size=256, device=device)
+      per_model_test_metric.append(float(calculate_metric(test_dataset[1], test_predictions, regression=is_regression)))
+    feature_predictions = get_feature_predictions(model, unique_features, device=device)
+    model_hist_data = {col: pred for col, pred in zip(column_names, feature_predictions)}
+    per_model_hist_data.append(model_hist_data)
+    per_model_mean_pred.append(compute_model_mean_pred(model_hist_data, all_indices, column_names))
 
-  for model_idx in range(args.n_models):
-    tf.keras.backend.clear_session()
-    tf.compat.v1.reset_default_graph()
-    with tf.Graph().as_default():
-      nn_model = graph_builder.create_nam_model(
-          x_train=x_train,
-          dropout=args.dropout,
-          num_basis_functions=args.num_basis_functions,
-          activation=args.activation,
-          trainable=False,
-          shallow=args.shallow,
-          name_scope=f"model_{model_idx}",
-      )
-      pred_input_ph = tf.compat.v1.placeholder(tf.float32, shape=[None, x_train.shape[1]])
-      pred_tensor = nn_model(pred_input_ph, training=False)
-      feature_input_phs = [tf.compat.v1.placeholder(tf.float32, shape=[None, 1]) for _ in range(num_features)]
-      feature_tensors = [nn_model.feature_nns[i](feature_input_phs[i], training=nn_model._false) for i in range(num_features)]
-
-      ckpt = resolve_checkpoint_path(osp.join(args.model_logdir, f"model_{model_idx}"))
-      saver = tf.compat.v1.train.Saver(var_list=build_restore_var_map(nn_model, ckpt, model_idx))
-
-      with tf.compat.v1.Session() as sess:
-        sess.run(tf.compat.v1.global_variables_initializer())
-        saver.restore(sess, ckpt)
-        if args.run_test_metrics:
-          test_predictions = get_test_predictions(sess, pred_tensor, pred_input_ph, test_dataset[0])
-          per_model_test_metric.append(
-              float(graph_builder.calculate_metric(test_dataset[1], test_predictions, regression=is_regression))
-          )
-
-        feature_predictions = get_feature_predictions(sess, feature_tensors, feature_input_phs, unique_features)
-        model_hist_data = {col: pred for col, pred in zip(column_names, feature_predictions)}
-        per_model_hist_data.append(model_hist_data)
-        per_model_mean_pred.append(compute_model_mean_pred(model_hist_data, all_indices, column_names))
-
-  avg_hist_data = {col: np.mean(np.stack([m[col] for m in per_model_hist_data], axis=0), axis=0) for col in column_names}
+  avg_hist_data = {
+      col: np.mean(np.stack([model_hist[col] for model_hist in per_model_hist_data], axis=0), axis=0)
+      for col in column_names
+  }
   mean_pred_ensemble = compute_model_mean_pred(avg_hist_data, all_indices, column_names)
-
   x1, x2 = compute_mean_feature_importance(avg_hist_data, mean_pred_ensemble)
-  cols = [col_names_map[args.dataset_name][x] for x in x1]
+  cols = [col_names_map[dataset_name][x] for x in x1]
 
-  prefix = args.dataset_name.lower()
-  importance_path = osp.join(args.output_dir, f"{prefix}_feature_importance.png")
-  shape_path = osp.join(args.output_dir, f"{prefix}_shape_plots_ensemble.png")
-  details_path = osp.join(args.output_dir, f"{prefix}_ensemble_plot_run_details.json")
-  text_summary_path = osp.join(args.output_dir, f"{prefix}_test_results.txt")
-
-  plot_mean_feature_importance(args.dataset_name, cols, x2, importance_path)
+  prefix = dataset_name.lower()
+  importance_path = osp.join(output_dir, f"{prefix}_feature_importance.png")
+  shape_path = osp.join(output_dir, f"{prefix}_shape_plots_ensemble.png")
+  details_path = osp.join(output_dir, f"{prefix}_ensemble_plot_run_details.json")
+  text_summary_path = osp.join(output_dir, f"{prefix}_test_results.txt")
+  plot_mean_feature_importance(dataset_name, cols, x2, importance_path)
 
   num_cols = 4
   num_rows = int(np.ceil(num_features / num_cols))
   fig = plt.figure(figsize=(num_cols * 4.5, num_rows * 4.5), facecolor="w", edgecolor="k")
-
   min_y, max_y = plot_all_hist(
-      dataset_name=args.dataset_name,
+      dataset_name=dataset_name,
       hist_data=avg_hist_data,
       num_rows=num_rows,
       num_cols=num_cols,
@@ -416,85 +436,58 @@ def main():
       linewidth=3.0,
       alpha=1.0,
   )
-
   for model_hist, model_mean in zip(per_model_hist_data, per_model_mean_pred):
     plot_all_hist(
-        dataset_name=args.dataset_name,
+        dataset_name=dataset_name,
         hist_data=model_hist,
         num_rows=num_rows,
         num_cols=num_cols,
-        color_base=[0.3, 0.4, 0.9],
+        color_base=[0.5, 0.5, 0.5],
         col_names_map=col_names_map,
         categorical_names=categorical_names,
         mean_pred=model_mean,
         unique_features_original=unique_features_original,
         linewidth=1.0,
-        alpha=0.15,
         min_y=min_y,
         max_y=max_y,
+        alpha=0.3,
     )
-
   shade_by_density_blocks(
-      avg_hist_data,
-      num_rows,
-      num_cols,
-      unique_features_original,
-      single_features_original,
-      categorical_names,
-      n_blocks=20,
+      hist_data=avg_hist_data,
+      num_rows=num_rows,
+      num_cols=num_cols,
+      unique_features_original=unique_features_original,
+      single_features_original=single_features_original,
+      categorical_names=categorical_names,
   )
-  plt.subplots_adjust(hspace=0.23)
+  plt.tight_layout()
   fig.savefig(shape_path, dpi=180)
 
   metric_name = "RMSE" if is_regression else "AUROC"
-  mean_test_metric = float(np.mean(per_model_test_metric)) if per_model_test_metric else None
   payload = {
-      "dataset_name": args.dataset_name,
-      "n_models": args.n_models,
-      "fold_num": args.fold_num,
-      "num_folds": args.num_folds,
-      "num_splits": args.num_splits,
-      "split_idx": args.split_idx,
+      "dataset_name": dataset_name,
       "metric_name": metric_name,
+      "n_models": n_models,
+      "fold_num": fold_num,
+      "num_folds": args.num_folds,
+      "num_splits": num_splits,
+      "split_idx": split_idx,
+      "run_test_metrics": args.run_test_metrics,
       "per_model_test_metric": per_model_test_metric,
-      "mean_test_metric": mean_test_metric,
-      "run_test_metrics": bool(args.run_test_metrics),
       "generated_at": datetime.now().isoformat(timespec="seconds"),
-      "importance_png": importance_path,
-      "shape_png": shape_path,
+      "model_logdir": model_logdir,
+      "feature_importance_path": importance_path,
+      "shape_plot_path": shape_path,
   }
   with open(details_path, "w", encoding="utf-8") as f:
     json.dump(payload, f, indent=2)
-
-  summary_lines = [
-      f"Dataset: {args.dataset_name}",
-      f"Fold: {args.fold_num}/{args.num_folds}",
-      f"Models: {args.n_models}",
-      f"Importance plot: {importance_path}",
-      f"Shape plot: {shape_path}",
-  ]
   if per_model_test_metric:
-    summary_lines.extend(
-        [
-            f"Metric: {metric_name}",
-            f"Mean test {metric_name}: {mean_test_metric:.6f}",
-            "Per-model test: " + ", ".join([f"{x:.6f}" for x in per_model_test_metric]),
-        ]
-    )
-  else:
-    summary_lines.append("Test metrics: skipped (--run_test_metrics not set)")
-  with open(text_summary_path, "w", encoding="utf-8") as f:
-    f.write("\n".join(summary_lines) + "\n")
-
-  if per_model_test_metric:
-    print(f"Per-model test {metric_name}: {per_model_test_metric}")
-    print(f"Mean test {metric_name}: {mean_test_metric:.6f}")
-  else:
-    print("Test metrics skipped. Use --run_test_metrics to enable.")
+    with open(text_summary_path, "w", encoding="utf-8") as f:
+      f.write(f"Mean test {metric_name}: {float(np.mean(per_model_test_metric)):.6f}\n")
+      f.write("Per-model test: " + ", ".join([f"{value:.6f}" for value in per_model_test_metric]) + "\n")
   print(f"Saved: {importance_path}")
   print(f"Saved: {shape_path}")
   print(f"Saved: {details_path}")
-  print(f"Saved: {text_summary_path}")
 
 
 if __name__ == "__main__":

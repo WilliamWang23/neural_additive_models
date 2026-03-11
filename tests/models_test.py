@@ -1,52 +1,45 @@
 # coding=utf-8
-# Copyright 2026 The Google Research Authors.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+"""Tests model construction and forward passes."""
 
-"""Tests functionality of loading different models."""
-
-from absl.testing import absltest
-from absl.testing import parameterized
+import os
+import sys
+import unittest
 
 import numpy as np
-import tensorflow.compat.v1 as tf
+import torch
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
 from neural_additive_models import models
 
 
-class LoadModelsTest(parameterized.TestCase):
-  """Tests whether neural net models can be run without error."""
+class LoadModelsTest(unittest.TestCase):
+  """Tests whether neural net models can run without error."""
 
-  @parameterized.named_parameters(('exu_nam', 'exu_nam'),
-                                  ('relu_nam', 'relu_nam'), ('dnn', 'dnn'))
-  def test_model(self, architecture):
-    """Test whether a model with specified architecture can be run."""
-    x = np.random.rand(5, 10).astype('float32')
-    sess = tf.InteractiveSession()
-    if architecture == 'exu_nam':
-      model = models.NAM(
-          num_inputs=x.shape[1], num_units=1024, shallow=True, activation='exu')
-    elif architecture == 'relu_nam':
-      model = models.NAM(
-          num_inputs=x.shape[1], num_units=64, shallow=False, activation='relu')
-    elif architecture == 'dnn':
-      model = models.DNN()
-    else:
-      raise ValueError('Architecture {} not found'.format(architecture))
-    out_op = model(x)
-    sess.run(tf.global_variables_initializer())
-    self.assertIsInstance(sess.run(out_op), np.ndarray)
-    sess.close()
+  def test_nam_and_dnn_forward(self):
+    """Smoke-test NAM and DNN forward passes."""
+    x = torch.rand(5, 10, dtype=torch.float32)
+    architectures = {
+        "exu_nam": models.NAM(num_inputs=x.shape[1], num_units=32, shallow=True, activation="exu"),
+        "relu_nam": models.NAM(num_inputs=x.shape[1], num_units=16, shallow=False, activation="relu"),
+        "dnn": models.DNN(input_dim=x.shape[1]),
+    }
+    for name, model in architectures.items():
+      with self.subTest(architecture=name):
+        out = model(x)
+        self.assertIsInstance(out.detach().cpu().numpy(), np.ndarray)
+        self.assertEqual(out.shape, (5,))
+
+  def test_calc_outputs_matches_forward_without_feature_dropout(self):
+    """Ensure feature contributions sum to the full prediction up to bias."""
+    x = torch.rand(4, 6, dtype=torch.float32)
+    model = models.NAM(num_inputs=x.shape[1], num_units=8, shallow=True, activation="exu")
+    model.eval()
+    outputs = model.calc_outputs(x, training=False)
+    stacked = torch.stack(outputs, dim=-1).sum(dim=-1) + model.bias
+    prediction = model(x, training=False)
+    self.assertTrue(torch.allclose(stacked, prediction))
 
 
-if __name__ == '__main__':
-  absltest.main()
+if __name__ == "__main__":
+  unittest.main()
