@@ -1,0 +1,15 @@
+{
+  "dataset_name": "Housing",
+  "metric_name": "RMSE",
+  "n_models": 20,
+  "fold_num": 1,
+  "num_folds": 5,
+  "num_splits": 3,
+  "split_idx": 1,
+  "run_test_metrics": false,
+  "per_model_test_metric": [],
+  "generated_at": "2026-03-11T14:33:41",
+  "model_logdir": "repro_runs/housing_nmodels20/training/fold_1/split_1",
+  "feature_importance_path": "./output/housing_feature_importance.png",
+  "shape_plot_path": "./output/housing_shape_plots_ensemble.png"
+}

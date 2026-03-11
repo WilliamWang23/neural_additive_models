@@ -299,7 +299,7 @@ def build_parser() -> argparse.ArgumentParser:
   parser.add_argument("--use_dnn", type=str2bool, nargs="?", const=True, default=None)
   parser.add_argument("--run_test_metrics", type=str2bool, nargs="?", const=True, default=False)
   parser.add_argument("--device", default="auto", choices=["auto", "cuda", "mps", "cpu"])
-  parser.add_argument("--output_dir", default=None)
+  parser.add_argument("--output_dir", default='./output')
   return parser
 
 

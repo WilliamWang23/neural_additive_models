@@ -9,9 +9,7 @@
 - `training/`：训练循环、loss、metric 与模型构建辅助函数。
 - `nam_train.py`：底层训练入口（完整超参数由 flags 控制）。
 - `nam_test.py`：独立测试入口（只做测试，不画图；可自动读取训练参数）。
-- `nam_train_test.py`：训练链路冒烟测试（快速验证代码能否跑通，不用于正式实验）。
 - `plot_nam_ensemble.py`：可视化脚本（默认只画图；可选 `--run_test_metrics`）。
-- `activate_nam_gpu_env.ps1` / `verify_nam_gpu.ps1`：GPU 环境激活与校验。
 - `requirements.txt` / `setup.py`：依赖与安装配置。
 - `repro_runs/`：训练、测试、可视化结果输出目录。
 - `data/`：本地数据集目录。
@@ -21,8 +19,6 @@
 - 训练链路：
   - `nam_train.py` -> `data_utils.py` + `training/`
   - `training/` -> `models/`
-- 冒烟测试链路：
-  - `nam_train_test.py` -> `nam_train.py`（内部用小 epoch 跑分类/回归最小流程）
 - 测试链路：
   - `nam_test.py` -> `data_utils.py` + `training/` + `models/`
   - 输入是 `repro_runs/.../training/fold_x/split_y/model_i` 的 checkpoint
@@ -31,13 +27,6 @@
   - 默认与测试逻辑解耦（默认不计算 test metric）
 
 ## 3) 启动方式（尽量简单）
-
-> 先激活 GPU 环境（每个新终端都要做一次）
-
-```powershell
-& "e:\Code\Projects\neural_additive_models\activate_nam_gpu_env.ps1"
-cd "e:\Code\Projects\neural_additive_models"
-```
 
 ### 3.1 训练（手动参数入口）
 
@@ -72,16 +61,6 @@ cd "e:\Code\Projects\neural_additive_models"
 ```
 
 说明：`--model_logdir` 必须指向包含 `model_0`、`model_1` 等子目录的路径（即 `.../training/fold_X/split_Y`）。
-
-### 3.4 训练链路冒烟测试（可选）
-
-```powershell
-& "C:\Users\85014\.conda\envs\nam_gpu_py310\python.exe" nam_train_test.py
-```
-
-说明：
-- 该脚本会用极小训练轮次快速跑通 `BreastCancer` 和 `Housing` 的训练流程；
-- 主要用于“环境/代码回归检查”，不是正式实验入口，也不会产出你要汇总的正式结果文件。
 
 ## 4) 画图脚本与测试分离说明
 

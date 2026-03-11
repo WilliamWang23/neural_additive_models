@@ -9,9 +9,7 @@ This is the new English guide. The old `README.md` is intentionally kept unchang
 - `training/`: training loop, losses, metrics, and model construction helpers.
 - `nam_train.py`: low-level training entry with full flag-based configuration.
 - `nam_test.py`: standalone test/evaluation entry (testing only, no plotting; supports auto param reuse).
-- `nam_train_test.py`: training pipeline smoke test (quick runnability check, not for formal experiments).
 - `plot_nam_ensemble.py`: plotting entry (now decoupled from testing by default).
-- `activate_nam_gpu_env.ps1` / `verify_nam_gpu.ps1`: GPU environment activation/verification.
 - `requirements.txt` / `setup.py`: dependency and package metadata.
 - `repro_runs/`: training/testing/plot outputs.
 - `data/`: local datasets.
@@ -21,8 +19,6 @@ This is the new English guide. The old `README.md` is intentionally kept unchang
 - Training flow:
   - `nam_train.py` -> `data_utils.py` + `training/`
   - `training/` -> `models/`
-- Smoke-test flow:
-  - `nam_train_test.py` -> `nam_train.py` (tiny-epoch classification/regression sanity check)
 - Testing flow:
   - `nam_test.py` -> `data_utils.py` + `training/` + `models/`
   - Input checkpoints: `repro_runs/.../training/fold_x/split_y/model_i`
@@ -31,13 +27,6 @@ This is the new English guide. The old `README.md` is intentionally kept unchang
   - Decoupled from test metrics by default
 
 ## 3) Simple Run Commands
-
-> Activate GPU env first in each new terminal:
-
-```powershell
-& "e:\Code\Projects\neural_additive_models\activate_nam_gpu_env.ps1"
-cd "e:\Code\Projects\neural_additive_models"
-```
 
 ### 3.1 Training (manual flags)
 
@@ -72,16 +61,6 @@ You can override auto-resolved values with explicit flags (`--model_logdir`, `--
 ```
 
 Note: `--model_logdir` must point to the directory containing `model_0`, `model_1`, etc. (i.e. `.../training/fold_X/split_Y`).
-
-### 3.4 Training smoke test (optional)
-
-```powershell
-& "C:\Users\85014\.conda\envs\nam_gpu_py310\python.exe" nam_train_test.py
-```
-
-Notes:
-- Runs very short training on `BreastCancer` and `Housing` just to verify the training stack works.
-- Intended for environment/regression sanity checks, not for official experiment outputs.
 
 ## 4) Plot/Test Decoupling
 
