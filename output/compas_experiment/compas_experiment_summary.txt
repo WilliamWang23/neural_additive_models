@@ -1,0 +1,14 @@
+COMPAS Experiment Summary
+Generated at: 2026-03-11T15:10:05
+
+Single Task NAM
+  Women: 0.704 +/- 0.048
+  Men: 0.724 +/- 0.014
+  Combined: 0.726 +/- 0.011
+
+Multitask NAM
+  Women: 0.701 +/- 0.048
+  Men: 0.723 +/- 0.014
+  Combined: 0.722 +/- 0.016
+
+Figure: /Users/king/Documents/硕士/Sem2/7404Computational_intelligence_and_machine_learning/Proj/neural_additive_models/output/compas_experiment/compas_figure10.png

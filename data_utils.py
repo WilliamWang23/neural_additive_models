@@ -243,12 +243,7 @@ def load_recidivism_data():
     input features `X` as a pandas.Dataframe and the labels `y` as a pd.Series.
   """
 
-  recid_path = _resolve_existing_dataset_path(
-      'compas-scores-two-years.csv',
-      'compas-analysis-master/compas-scores-two-years.csv')
-  df = pd.read_csv(recid_path)
-  df = df[df['sex'].isin(['Male', 'Female'])]
-  df = df[df['two_year_recid'].isin([0, 1])]
+  df = load_recidivism_dataframe()
   feature_cols = [
       'age', 'juv_fel_count', 'juv_misd_count', 'juv_other_count',
       'priors_count', 'c_charge_degree', 'race', 'sex'
@@ -259,6 +254,54 @@ def load_recidivism_data():
       'problem': 'classification',
       'X': x_df,
       'y': y_df,
+  }
+
+
+def load_recidivism_dataframe():
+  """Load the locally available COMPAS dataframe with project filtering."""
+  recid_path = _resolve_existing_dataset_path(
+      'compas-scores-two-years.csv',
+      'compas-analysis-master/compas-scores-two-years.csv')
+  df = pd.read_csv(recid_path)
+  df = df[df['sex'].isin(['Male', 'Female'])]
+  df = df[df['two_year_recid'].isin([0, 1])]
+  return df.reset_index(drop=True)
+
+
+def load_recidivism_multitask_data(
+    include_sex_feature: bool = True,
+) -> Dict[str, Union[str, np.ndarray, List[str]]]:
+  """Load COMPAS as a two-task gender-conditioned classification problem."""
+  df = load_recidivism_dataframe()
+  feature_cols = [
+      'age', 'juv_fel_count', 'juv_misd_count', 'juv_other_count',
+      'priors_count', 'c_charge_degree', 'race'
+  ]
+  if include_sex_feature:
+    feature_cols.append('sex')
+  x_df = df[feature_cols]
+  transformed_x, column_names = transform_data(x_df)
+  transformed_x = transformed_x.astype('float32')
+
+  task_names = ['Female', 'Male']
+  targets = np.zeros((len(df), len(task_names)), dtype=np.float32)
+  masks = np.zeros_like(targets)
+  task_index = np.where(df['sex'].to_numpy() == 'Female', 0, 1).astype(np.int64)
+  row_index = np.arange(len(df))
+  labels = df['two_year_recid'].to_numpy(dtype=np.float32)
+  targets[row_index, task_index] = labels
+  masks[row_index, task_index] = 1.0
+
+  return {
+      'problem': 'multitask_classification',
+      'X': transformed_x,
+      'y': targets,
+      'mask': masks,
+      'task_index': task_index,
+      'task_names': task_names,
+      'column_names': column_names,
+      'feature_columns': feature_cols,
+      'raw_frame': df,
   }
 
 

@@ -80,20 +80,22 @@ class FeatureNN(nn.Module):
       shallow: bool = True,
       feature_num: int = 0,
       activation: str = "exu",
+      output_dim: int = 1,
   ) -> None:
     super().__init__()
     self.dropout = dropout
     self.shallow = shallow
     self.feature_num = feature_num
     self.activation = activation
+    self.output_dim = output_dim
     self.activation_layer = ActivationLayer(num_units=num_units, activation=activation)
     self.hidden_layers = nn.ModuleList([self.activation_layer])
     if not shallow:
       self.hidden_layers.append(nn.Linear(num_units, 64))
       self.hidden_layers.append(nn.Linear(64, 32))
-      self.output_layer = nn.Linear(32, 1, bias=False)
+      self.output_layer = nn.Linear(32, output_dim, bias=False)
     else:
-      self.output_layer = nn.Linear(num_units, 1, bias=False)
+      self.output_layer = nn.Linear(num_units, output_dim, bias=False)
 
   def forward(self, x: Tensor, training: bool | None = None) -> Tensor:
     """Return the scalar contribution for the corresponding feature."""
@@ -103,7 +105,10 @@ class FeatureNN(nn.Module):
     if not self.shallow:
       hidden = F.dropout(F.relu(self.hidden_layers[1](hidden)), p=self.dropout, training=should_train)
       hidden = F.dropout(F.relu(self.hidden_layers[2](hidden)), p=self.dropout, training=should_train)
-    return self.output_layer(hidden).squeeze(-1)
+    outputs = self.output_layer(hidden)
+    if self.output_dim == 1:
+      return outputs.squeeze(-1)
+    return outputs
 
 
 class NAM(nn.Module):
@@ -137,6 +142,7 @@ class NAM(nn.Module):
             shallow=shallow,
             feature_num=index,
             activation=activation,
+            output_dim=1,
         )
         for index in range(num_inputs)
     ])
@@ -162,6 +168,131 @@ class NAM(nn.Module):
         training=should_train,
     )
     return dropped_outputs.sum(dim=-1) + self.bias
+
+
+class MultiTaskNAM(nn.Module):
+  """Multi-task NAM with shared feature subnetworks and task-specific outputs."""
+
+  def __init__(
+      self,
+      num_inputs: int,
+      num_units: int | Sequence[int],
+      num_tasks: int,
+      shallow: bool = True,
+      feature_dropout: float = 0.0,
+      dropout: float = 0.0,
+      activation: str = "exu",
+  ) -> None:
+    super().__init__()
+    self.num_inputs = num_inputs
+    self.num_tasks = num_tasks
+    if isinstance(num_units, int):
+      self.num_units = [num_units for _ in range(num_inputs)]
+    else:
+      self.num_units = list(num_units)
+    if len(self.num_units) != num_inputs:
+      raise ValueError("The number of unit values must match the number of inputs.")
+    self.shallow = shallow
+    self.feature_dropout = feature_dropout
+    self.dropout = dropout
+    self.activation = activation
+    self.feature_nns = nn.ModuleList([
+        FeatureNN(
+            num_units=self.num_units[index],
+            dropout=dropout,
+            shallow=shallow,
+            feature_num=index,
+            activation=activation,
+            output_dim=num_tasks,
+        )
+        for index in range(num_inputs)
+    ])
+    self.bias = nn.Parameter(torch.zeros(num_tasks))
+
+  def calc_outputs(self, x: Tensor, training: bool | None = None) -> List[Tensor]:
+    """Return one output tensor per input feature with task contributions."""
+    if x.ndim != 2:
+      raise ValueError(f"Expected rank-2 input, got shape {tuple(x.shape)}")
+    return [
+        feature_nn(feature_values, training=training)
+        for feature_nn, feature_values in zip(self.feature_nns, torch.split(x, 1, dim=1))
+    ]
+
+  def forward(self, x: Tensor, training: bool | None = None) -> Tensor:
+    """Return the per-task logits."""
+    should_train = self.training if training is None else training
+    individual_outputs = self.calc_outputs(x, training=should_train)
+    stacked_outputs = torch.stack(individual_outputs, dim=1)
+    dropped_outputs = F.dropout(
+        stacked_outputs,
+        p=self.feature_dropout,
+        training=should_train,
+    )
+    return dropped_outputs.sum(dim=1) + self.bias
+
+
+class FactorizedMachine(nn.Module):
+  """Second-order factorization machine interaction layer."""
+
+  def __init__(self, input_dim: int, rank: int = 8) -> None:
+    super().__init__()
+    self.input_dim = input_dim
+    self.rank = rank
+    self.factors = nn.Parameter(torch.empty(input_dim, rank))
+    self.reset_parameters()
+
+  def reset_parameters(self) -> None:
+    """Initialize latent interaction factors."""
+    nn.init.xavier_uniform_(self.factors)
+
+  def forward(self, x: Tensor) -> Tensor:
+    """Return the pairwise interaction score for each sample."""
+    if x.ndim != 2:
+      raise ValueError(f"Expected rank-2 input, got shape {tuple(x.shape)}")
+    projected = x @ self.factors
+    projected_square = projected.square()
+    squared_projected = (x.square()) @ self.factors.square()
+    return 0.5 * (projected_square - squared_projected).sum(dim=1)
+
+
+class FactorizedNAM(nn.Module):
+  """NAM with an FM interaction term added directly to the output logit."""
+
+  def __init__(
+      self,
+      num_inputs: int,
+      num_units: int | Sequence[int],
+      fm_rank: int = 8,
+      shallow: bool = True,
+      feature_dropout: float = 0.0,
+      dropout: float = 0.0,
+      activation: str = "exu",
+  ) -> None:
+    super().__init__()
+    self.nam = NAM(
+        num_inputs=num_inputs,
+        num_units=num_units,
+        shallow=shallow,
+        feature_dropout=feature_dropout,
+        dropout=dropout,
+        activation=activation,
+    )
+    self.factorized_machine = FactorizedMachine(input_dim=num_inputs, rank=fm_rank)
+
+  @property
+  def feature_nns(self) -> nn.ModuleList:
+    """Expose NAM feature networks for existing regularization utilities."""
+    return self.nam.feature_nns
+
+  def calc_outputs(self, x: Tensor, training: bool | None = None) -> List[Tensor]:
+    """Return the additive NAM feature contributions."""
+    return self.nam.calc_outputs(x, training=training)
+
+  def forward(self, x: Tensor, training: bool | None = None) -> Tensor:
+    """Return additive plus pairwise interaction logits."""
+    additive_logits = self.nam(x, training=training)
+    interaction_logits = self.factorized_machine(x)
+    return additive_logits + interaction_logits
 
 
 class DNN(nn.Module):

@@ -21,6 +21,44 @@ Use `./run.sh` test script to ensure that the setup is correct.
 ## Multi-task NAMs
 The code for multi task NAMs can be found at [https://github.com/lemeln/nam](https://github.com/lemeln/nam).
 
+## COMPAS Single-task and Multitask Experiment
+
+This repository now includes a local COMPAS experiment runner that reproduces
+the paper's single-task vs multitask NAM setting without changing the project
+layout. The script trains:
+
+- a single-task NAM ensemble for recidivism prediction
+- a multitask NAM ensemble with separate outputs for women and men
+- 5-fold cross-validation AUC summaries
+- a Figure 10 style visualization comparing single-task and multitask shape plots
+
+Example commands:
+
+```bash
+python compas_experiment.py --mode cv --n_models 20 --training_epochs 50
+python compas_experiment.py --mode figure --n_models 20 --training_epochs 50
+python compas_experiment.py --mode all --n_models 100 --training_epochs 80
+```
+
+Outputs are written under `output/compas_experiment/`.
+
+## compass_FM Experiment
+
+The repository also includes a `compass_FM` experiment for overall COMPAS
+recidivism AUROC comparison on the full dataset without splitting by gender.
+It compares:
+
+- a standard single-task NAM baseline
+- a NAM augmented with a `FactorizedMachine` interaction term added directly to the output logit
+
+Example command:
+
+```bash
+python compass_FM.py --n_models 20 --training_epochs 50 --fm_rank 8
+```
+
+Outputs are written under `output/compass_FM/`.
+
 ## Dependencies
 
 The code uses these packages:
