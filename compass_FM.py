@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # coding=utf-8
-"""COMPAS NAM vs NAM+FM experiment on overall AUROC."""
+"""Dataset-generic NAM vs NAM+FM experiment."""
 
 from __future__ import annotations
 
@@ -33,13 +33,7 @@ _add_repo_parent_to_path(_repo_root())
 
 import numpy as np
 import torch
-from sklearn.metrics import roc_auc_score
-from sklearn.model_selection import StratifiedKFold
-from sklearn.model_selection import StratifiedShuffleSplit
 from torch import nn
-from torch.nn import functional as F
-from tqdm.auto import tqdm
-
 from neural_additive_models import data_utils
 from neural_additive_models import models
 from neural_additive_models.nam_train import str2bool
@@ -47,26 +41,20 @@ from neural_additive_models.runtime import resolve_device
 from neural_additive_models.runtime import save_checkpoint
 from neural_additive_models.training.data import create_eval_loader
 from neural_additive_models.training.data import create_train_loader
+from neural_additive_models.training.metrics import calculate_metric
 from neural_additive_models.training.trainer import infer_num_units
+from tqdm.auto import tqdm
 
 
-TASK_VALUE_TO_INDEX = {"Female": 0, "Male": 1}
-COMPAS_FEATURE_COLUMNS = [
-    "age",
-    "juv_fel_count",
-    "juv_misd_count",
-    "juv_other_count",
-    "priors_count",
-    "c_charge_degree",
-    "race",
-    "sex",
-]
+REGRESSION_DATASETS = {"Fico", "Housing"}
 
 
 @dataclass
 class ExperimentConfig:
-  """Hyperparameters for the COMPASS_FM experiment."""
+  """Hyperparameters for the NAM vs NAM+FM experiment."""
 
+  dataset_name: str
+  regression: bool
   training_epochs: int
   learning_rate: float
   batch_size: int
@@ -84,16 +72,19 @@ class ExperimentConfig:
   n_models: int
   n_folds: int
   seed: int
+  validation_size: float
   device: str
   output_dir: str
 
 
 def build_parser() -> argparse.ArgumentParser:
   """Create the CLI parser."""
-  parser = argparse.ArgumentParser(description="Run the compass_FM COMPAS AUROC experiment.")
-  parser.add_argument("--training_epochs", type=int, default=80)
+  parser = argparse.ArgumentParser(description="Run a dataset-generic NAM vs NAM+FM experiment.")
+  parser.add_argument("--dataset_name", type=str, default="Fico")#Recidivism Housing
+  parser.add_argument("--regression", type=str2bool, nargs="?", const=True, default=None)
+  parser.add_argument("--training_epochs", type=int, default=1000)
   parser.add_argument("--learning_rate", type=float, default=1e-2)
-  parser.add_argument("--batch_size", type=int, default=512)
+  parser.add_argument("--batch_size", type=int, default=1024)
   parser.add_argument("--decay_rate", type=float, default=0.995)
   parser.add_argument("--dropout", type=float, default=0.15)
   parser.add_argument("--feature_dropout", type=float, default=0.0)
@@ -108,14 +99,26 @@ def build_parser() -> argparse.ArgumentParser:
   parser.add_argument("--n_models", type=int, default=10)
   parser.add_argument("--n_folds", type=int, default=5)
   parser.add_argument("--seed", type=int, default=42)
-  parser.add_argument("--device", type=str, default="auto", choices=["auto", "cuda", "mps", "cpu"])
-  parser.add_argument("--output_dir", type=str, default=osp.join(_repo_root(), "output", "compass_FM"))
+  parser.add_argument("--validation_size", type=float, default=0.125)
+  parser.add_argument("--device", type=str, default="cpu", choices=["auto", "cuda", "mps", "cpu"])
+  parser.add_argument("--output_dir", type=str, default=None)
   return parser
+
+
+def is_regression_dataset(dataset_name: str) -> bool:
+  """Infer the task type from the dataset name."""
+  return dataset_name in REGRESSION_DATASETS
 
 
 def make_experiment_config(args: argparse.Namespace) -> ExperimentConfig:
   """Convert CLI args into a typed config."""
+  regression = is_regression_dataset(args.dataset_name) if args.regression is None else args.regression
+  output_dir = args.output_dir
+  if output_dir is None:
+    output_dir = osp.join(_repo_root(), "output", "compass_FM", args.dataset_name)
   return ExperimentConfig(
+      dataset_name=args.dataset_name,
+      regression=regression,
       training_epochs=args.training_epochs,
       learning_rate=args.learning_rate,
       batch_size=args.batch_size,
@@ -133,8 +136,9 @@ def make_experiment_config(args: argparse.Namespace) -> ExperimentConfig:
       n_models=args.n_models,
       n_folds=args.n_folds,
       seed=args.seed,
+      validation_size=args.validation_size,
       device=args.device,
-      output_dir=args.output_dir,
+      output_dir=output_dir,
   )
 
 
@@ -152,30 +156,14 @@ def set_torch_seed(seed: int) -> None:
     torch.cuda.manual_seed_all(seed)
 
 
-def sigmoid(values: np.ndarray) -> np.ndarray:
-  """Apply a numerically stable sigmoid to logits."""
-  values = np.asarray(values, dtype=np.float64)
-  return np.where(values >= 0, 1.0 / (1.0 + np.exp(-values)), np.exp(values) / (1.0 + np.exp(values)))
-
-
-def prepare_compass_data() -> Dict[str, object]:
-  """Load COMPAS data for overall recidivism prediction."""
-  df = data_utils.load_recidivism_dataframe()
-  x_df = df[COMPAS_FEATURE_COLUMNS].copy()
-  features, column_names = data_utils.transform_data(x_df)
-  labels = df["two_year_recid"].to_numpy(dtype=np.float32)
-  task_index = np.array([TASK_VALUE_TO_INDEX[value] for value in df["sex"].to_numpy()], dtype=np.int64)
+def prepare_dataset(dataset_name: str) -> Dict[str, object]:
+  """Load a dataset using the shared project preprocessing."""
+  features, labels, column_names = data_utils.load_dataset(dataset_name)
   return {
-      "features": features.astype(np.float32),
-      "labels": labels,
-      "task_index": task_index,
+      "features": np.asarray(features, dtype=np.float32),
+      "labels": np.asarray(labels, dtype=np.float32),
       "column_names": column_names,
   }
-
-
-def build_group_labels(labels: np.ndarray, task_index: np.ndarray) -> np.ndarray:
-  """Preserve sex/label balance across folds while reporting only overall AUROC."""
-  return np.array([f"{int(task)}_{int(label)}" for task, label in zip(task_index, labels)], dtype=object)
 
 
 def feature_output_regularization(model: nn.Module, inputs: torch.Tensor) -> torch.Tensor:
@@ -228,13 +216,13 @@ def build_factorized_nam_model(x_train: np.ndarray, config: ExperimentConfig) ->
   )
 
 
-def predict_logits(
+def predict_values(
     model: nn.Module,
     features: np.ndarray,
     batch_size: int,
     device: torch.device,
 ) -> np.ndarray:
-  """Predict logits in batches."""
+  """Predict logits or regression outputs in batches."""
   loader = create_eval_loader(features, batch_size=batch_size)
   outputs = []
   model.eval()
@@ -254,7 +242,36 @@ def _checkpoint_payload(model: nn.Module, epoch: int, metric_value: float) -> Di
   }
 
 
-def train_binary_model(
+def calculate_training_loss(
+    model: nn.Module,
+    inputs: torch.Tensor,
+    targets: torch.Tensor,
+    config: ExperimentConfig,
+) -> torch.Tensor:
+  """Compute the task loss and optional regularization terms."""
+  predictions = model(inputs, training=True)
+  if config.regression:
+    loss = nn.functional.mse_loss(predictions, targets)
+  else:
+    loss = nn.functional.binary_cross_entropy_with_logits(predictions, targets)
+  if config.output_regularization > 0:
+    loss = loss + config.output_regularization * feature_output_regularization(model, inputs)
+  if config.l2_regularization > 0:
+    loss = loss + config.l2_regularization * weight_decay(model, num_networks=len(model.feature_nns))
+  return loss
+
+
+def is_better_metric(current: float, best: float, regression: bool) -> bool:
+  """Compare metrics using the task-specific optimization direction."""
+  return current < best if regression else current > best
+
+
+def metric_name(regression: bool) -> str:
+  """Return the display name of the primary metric."""
+  return "RMSE" if regression else "AUROC"
+
+
+def train_model(
     model_kind: str,
     model_index: int,
     x_train: np.ndarray,
@@ -265,7 +282,7 @@ def train_binary_model(
     device: torch.device,
     model_dir: str,
 ):
-  """Train one binary classifier model and return the best checkpointed model."""
+  """Train one model and return the best checkpointed model."""
   set_torch_seed(config.seed + model_index)
   if model_kind == "nam":
     model = build_nam_model(x_train, config).to(device)
@@ -280,10 +297,10 @@ def train_binary_model(
       x_train=x_train,
       y_train=y_train,
       batch_size=min(config.batch_size, x_train.shape[0]),
-      regression=False,
+      regression=config.regression,
   )
 
-  best_metric = -np.inf
+  best_metric = np.inf if config.regression else -np.inf
   best_epoch = 0
   best_state = None
   patience = 0
@@ -295,19 +312,14 @@ def train_binary_model(
       batch_features = batch_features.to(device)
       batch_targets = batch_targets.to(device)
       optimizer.zero_grad()
-      logits = model(batch_features, training=True)
-      loss = F.binary_cross_entropy_with_logits(logits, batch_targets)
-      if config.output_regularization > 0:
-        loss = loss + config.output_regularization * feature_output_regularization(model, batch_features)
-      if config.l2_regularization > 0:
-        loss = loss + config.l2_regularization * weight_decay(model, num_networks=len(model.feature_nns))
+      loss = calculate_training_loss(model, batch_features, batch_targets, config)
       loss.backward()
       optimizer.step()
     scheduler.step()
 
-    val_probabilities = sigmoid(predict_logits(model, x_val, config.batch_size, device))
-    validation_metric = float(roc_auc_score(y_val, val_probabilities))
-    if validation_metric > best_metric:
+    val_predictions = predict_values(model, x_val, config.batch_size, device)
+    validation_metric = float(calculate_metric(y_val, val_predictions, regression=config.regression))
+    if is_better_metric(validation_metric, best_metric, config.regression):
       best_metric = validation_metric
       best_epoch = epoch
       patience = 0
@@ -320,14 +332,16 @@ def train_binary_model(
 
   if best_state is None:
     best_state = {key: value.detach().cpu().clone() for key, value in model.state_dict().items()}
-    save_checkpoint(_checkpoint_payload(model, config.training_epochs, best_metric), osp.join(best_dir, "model.pt"))
+    fallback_metric = float(calculate_metric(y_val, predict_values(model, x_val, config.batch_size, device), regression=config.regression))
+    save_checkpoint(_checkpoint_payload(model, config.training_epochs, fallback_metric), osp.join(best_dir, "model.pt"))
+    best_metric = fallback_metric
   model.load_state_dict(best_state)
   model.eval()
-  return model, {"best_epoch": best_epoch or config.training_epochs, "best_validation_auc": float(best_metric)}
+  return model, {"best_epoch": best_epoch or config.training_epochs, "best_validation_metric": float(best_metric)}
 
 
 def ensemble_mean(predictions: Sequence[np.ndarray]) -> np.ndarray:
-  """Average a list of per-model probability arrays."""
+  """Average a list of per-model prediction arrays."""
   return np.mean(np.stack(predictions, axis=0), axis=0)
 
 
@@ -342,63 +356,74 @@ def run_cross_validation(
     config: ExperimentConfig,
     device: torch.device,
 ) -> Dict[str, object]:
-  """Run 5-fold NAM vs NAM+FM COMPAS comparison on overall AUROC."""
+  """Run cross-validation using the shared project splitting rules."""
   features = np.asarray(dataset["features"], dtype=np.float32)
   labels = np.asarray(dataset["labels"], dtype=np.float32)
-  task_index = np.asarray(dataset["task_index"], dtype=np.int64)
-  strata = build_group_labels(labels, task_index)
-  splitter = StratifiedKFold(n_splits=config.n_folds, shuffle=True, random_state=config.seed)
   cv_results = {"nam": [], "factorized_nam": []}
 
-  for fold_index, (train_val_index, test_index) in enumerate(splitter.split(features, strata), start=1):
+  print(f"Dataset: {config.dataset_name}, Size: {features.shape[0]}")
+  for fold_index in range(1, config.n_folds + 1):
+    print(f"Cross-val fold: {fold_index}/{config.n_folds}")
     fold_dir = ensure_dir(osp.join(config.output_dir, "training", f"fold_{fold_index}"))
-    train_val_strata = strata[train_val_index]
-    validation_splitter = StratifiedShuffleSplit(
+    (x_train_all, y_train_all), (x_test, y_test) = data_utils.get_train_test_fold(
+        features,
+        labels,
+        fold_num=fold_index,
+        num_folds=config.n_folds,
+        stratified=not config.regression,
+        random_state=config.seed,
+    )
+    validation_gen = data_utils.split_training_dataset(
+        x_train_all,
+        y_train_all,
         n_splits=1,
-        test_size=0.125,
+        stratified=not config.regression,
+        test_size=config.validation_size,
         random_state=config.seed + fold_index,
     )
-    train_rel_index, val_rel_index = next(validation_splitter.split(features[train_val_index], train_val_strata))
-    train_index = train_val_index[train_rel_index]
-    val_index = train_val_index[val_rel_index]
+    (x_train, y_train), (x_val, y_val) = next(validation_gen)
 
     for model_kind in ("nam", "factorized_nam"):
-      model_probabilities = []
+      model_predictions = []
       model_metadata = []
       model_fold_dir = ensure_dir(osp.join(fold_dir, model_kind))
       for model_index in tqdm(range(config.n_models), desc=f"Fold {fold_index} {model_kind}"):
-        model, model_info = train_binary_model(
+        model, model_info = train_model(
             model_kind=model_kind,
             model_index=model_index,
-            x_train=features[train_index],
-            y_train=labels[train_index],
-            x_val=features[val_index],
-            y_val=labels[val_index],
+            x_train=x_train,
+            y_train=y_train,
+            x_val=x_val,
+            y_val=y_val,
             config=config,
             device=device,
             model_dir=ensure_dir(osp.join(model_fold_dir, f"model_{model_index}")),
         )
-        probabilities = sigmoid(predict_logits(model, features[test_index], config.batch_size, device))
-        model_probabilities.append(probabilities)
+        predictions = predict_values(model, x_test, config.batch_size, device)
+        model_predictions.append(predictions)
         model_metadata.append(model_info)
 
-      ensemble_probabilities = ensemble_mean(model_probabilities)
-      fold_auc = float(roc_auc_score(labels[test_index], ensemble_probabilities))
+      ensemble_predictions = ensemble_mean(model_predictions)
+      fold_metric = float(calculate_metric(y_test, ensemble_predictions, regression=config.regression))
       cv_results[model_kind].append({
           "fold": fold_index,
-          "combined_auc": fold_auc,
+          "test_metric": fold_metric,
           "models": model_metadata,
       })
 
   summary = {
-      model_kind: {
-          "combined_auc": summarize_metric_list([fold["combined_auc"] for fold in cv_results[model_kind]])
-      }
-      for model_kind in ("nam", "factorized_nam")
+      "metric_name": metric_name(config.regression),
+      "optimize_mode": "min" if config.regression else "max",
+      "nam": {
+          "metric": summarize_metric_list([fold["test_metric"] for fold in cv_results["nam"]]),
+      },
+      "factorized_nam": {
+          "metric": summarize_metric_list([fold["test_metric"] for fold in cv_results["factorized_nam"]]),
+      },
   }
-  summary["delta_auc"] = (
-      summary["factorized_nam"]["combined_auc"]["mean"] -
-      summary["nam"]["combined_auc"]["mean"]
+  summary["delta_metric"] = (
+      summary["factorized_nam"]["metric"]["mean"] -
+      summary["nam"]["metric"]["mean"]
   )
   return {"folds": cv_results, "summary": summary}
 
@@ -413,20 +438,24 @@ def save_json(payload: Dict[str, object], path: str) -> None:
 def save_summary_text(result: Dict[str, object], path: str) -> None:
   """Persist a human-readable summary."""
   summary = result["summary"]
+  metric_label = summary["metric_name"]
+  direction = "lower is better" if summary["optimize_mode"] == "min" else "higher is better"
   lines = [
-      "compass_FM Experiment Summary",
+      "NAM vs NAM+FM Experiment Summary",
       f"Generated at: {datetime.now().isoformat(timespec='seconds')}",
+      f"Dataset: {result['config']['dataset_name']}",
+      f"Primary metric: {metric_label} ({direction})",
       "",
       "NAM",
-      "  Combined AUROC: "
-      f"{summary['nam']['combined_auc']['mean']:.3f} +/- {summary['nam']['combined_auc']['std']:.3f}",
+      "  Metric: "
+      f"{summary['nam']['metric']['mean']:.3f} +/- {summary['nam']['metric']['std']:.3f}",
       "",
       "NAM + FactorizedMachine",
-      "  Combined AUROC: "
-      f"{summary['factorized_nam']['combined_auc']['mean']:.3f} +/- "
-      f"{summary['factorized_nam']['combined_auc']['std']:.3f}",
+      "  Metric: "
+      f"{summary['factorized_nam']['metric']['mean']:.3f} +/- "
+      f"{summary['factorized_nam']['metric']['std']:.3f}",
       "",
-      f"Delta AUROC (NAM+FM - NAM): {summary['delta_auc']:.4f}",
+      f"Delta {metric_label} (NAM+FM - NAM): {summary['delta_metric']:.4f}",
   ]
   with open(path, "w", encoding="utf-8") as file_obj:
     file_obj.write("\n".join(lines).rstrip() + "\n")
@@ -438,10 +467,10 @@ def main(argv: Sequence[str] | None = None) -> None:
   config = make_experiment_config(args)
   ensure_dir(config.output_dir)
   device = resolve_device(config.device)
-  dataset = prepare_compass_data()
+  dataset = prepare_dataset(config.dataset_name)
   cv_result = run_cross_validation(dataset, config, device)
   result = {
-      "experiment_name": "compass_FM",
+      "experiment_name": "nam_vs_factorized_nam",
       "config": {
           **config.__dict__,
           "resolved_device": str(device),
@@ -449,8 +478,8 @@ def main(argv: Sequence[str] | None = None) -> None:
       "generated_at": datetime.now().isoformat(timespec="seconds"),
       **cv_result,
   }
-  json_path = osp.join(config.output_dir, "compass_FM_results.json")
-  text_path = osp.join(config.output_dir, "compass_FM_summary.txt")
+  json_path = osp.join(config.output_dir, f"{config.dataset_name}_FM_results.json")
+  text_path = osp.join(config.output_dir, f"{config.dataset_name}_FM_summary.txt")
   save_json(result, json_path)
   save_summary_text(result, text_path)
   print(f"Saved: {json_path}")

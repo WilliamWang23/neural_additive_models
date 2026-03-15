@@ -66,3 +66,25 @@ Note: `--model_logdir` must point to the directory containing `model_0`, `model_
 
 - `plot_nam_ensemble.py` now focuses on plotting by default.
 - To compute test metrics inside plotting, explicitly pass `--run_test_metrics`.
+
+## 5) `compass_FM.py` Experiment Commands
+
+`compass_FM.py` is the generic NAM vs NAM+FM experiment entry. A ready-to-run shell script is provided at [run_compass_fm_experiments.sh](/Users/king/Documents/硕士/Sem2/7404Computational_intelligence_and_machine_learning/Proj/neural_additive_models/run_compass_fm_experiments.sh).
+
+Included parameter sets:
+- `Fico`
+- `Housing`
+- `Credit`
+
+Run all configured experiments:
+
+```bash
+./run_compass_fm_experiments.sh
+```
+
+Parameter mapping used in the script:
+- output penalty `lambda_1` -> `--output_regularization`
+- weight decay `lambda_2` -> `--l2_regularization`
+- hidden layers `64-64-32` -> `--shallow=False --activation=relu --num_basis_functions=64`
+- hidden units `1024` with `ReLU-1` / `ExU` setup -> `--shallow=True --activation=exu --num_basis_functions=1024`
+

@@ -66,3 +66,26 @@
 
 - `plot_nam_ensemble.py` 默认只出图，不再默认跑测试指标。
 - 如确实需要在画图时顺带算测试分数，显式加 `--run_test_metrics`。
+
+## 5) `compass_FM.py` 实验脚本
+
+`compass_FM.py` 是通用的 NAM 与 NAM+FM 对比实验入口。现成运行脚本位于 [run_compass_fm_experiments.sh](/Users/king/Documents/硕士/Sem2/7404Computational_intelligence_and_machine_learning/Proj/neural_additive_models/run_compass_fm_experiments.sh)。
+
+当前脚本包含的数据集参数组：
+- `Fico`
+- `Housing`
+- `Credit`
+
+运行全部配置实验：
+
+```bash
+./run_compass_fm_experiments.sh
+```
+
+脚本中的参数映射关系如下：
+- 输出惩罚 `lambda_1` -> `--output_regularization`
+- 权重衰减 `lambda_2` -> `--l2_regularization`
+- 隐层 `64-64-32` -> `--shallow=False --activation=relu --num_basis_functions=64`
+- 隐单元 `1024` 且采用 `ReLU-1 / ExU` 方案 -> `--shallow=True --activation=exu --num_basis_functions=1024`
+
+
