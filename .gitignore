@@ -12,11 +12,10 @@ env/
 dist/
 build/
 
-# 本地数据集（体积大，组员自行下载；保留 README 说明）
+
 data/*
 !data/README.md
 
-# TensorFlow / 训练产物（体积大，不提交）
 repro_runs/
 *.ckpt
 *.index
@@ -32,4 +31,6 @@ Thumbs.db
 
 # 日志
 *.log
+# 训练输出（不提交）
+output/
 log/
